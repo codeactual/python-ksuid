@@ -41,7 +41,20 @@ class Ksuid:
     def from_base62(cls: t.Type[SelfT], data: str) -> SelfT:
         """initializes Ksuid from base62 encoding"""
 
-        return cls.from_bytes(int.to_bytes(int(base62.decode(data)), cls.BYTES_LENGTH, "big"))
+        if not data:
+            raise ValueError("base62 string cannot be empty")
+
+        try:
+            decoded = int(base62.decode(data))
+        except ValueError as exc:
+            raise ValueError("invalid base62 string") from exc
+
+        try:
+            raw = int.to_bytes(decoded, cls.BYTES_LENGTH, "big")
+        except OverflowError as exc:
+            raise ValueError("base62 value out of range") from exc
+
+        return cls.from_bytes(raw)
 
     @classmethod
     def from_bytes(cls: t.Type[SelfT], value: bytes) -> SelfT:
@@ -52,6 +65,7 @@ class Ksuid:
 
         res = cls()
         res._uid = value
+        res._validate_timestamp(int.from_bytes(value[: cls.TIMESTAMP_LENGTH_IN_BYTES], "big"))
 
         return res
 
@@ -60,6 +74,9 @@ class Ksuid:
 
         if payload is not None and len(payload) != self.PAYLOAD_LENGTH_IN_BYTES:
             raise ByteArrayLengthException()
+
+        if datetime is not None and datetime.tzinfo is None:
+            datetime = datetime.replace(tzinfo=timezone.utc)
 
         _payload = secrets.token_bytes(self.PAYLOAD_LENGTH_IN_BYTES) if payload is None else payload
         datetime = datetime.astimezone(timezone.utc) if datetime is not None else datetime_lib.now(tz=timezone.utc)
@@ -77,17 +94,26 @@ class Ksuid:
         return self._uid
 
     def __eq__(self, other: object) -> bool:
-        assert isinstance(other, self.__class__)
+        if not isinstance(other, self.__class__):
+            return NotImplemented
         return self._uid == other._uid
 
     def __lt__(self: SelfT, other: SelfT) -> bool:
+        if not isinstance(other, self.__class__):
+            return NotImplemented
         return self._uid < other._uid
 
     def __hash__(self) -> int:
         return int.from_bytes(self._uid, "big")
 
+    def _validate_timestamp(self, timestamp: int) -> None:
+        max_value = (1 << (self.TIMESTAMP_LENGTH_IN_BYTES * 8)) - 1
+        if timestamp < 0 or timestamp > max_value:
+            raise ValueError("timestamp out of range for KSUID encoding")
+
     def _inner_init(self, dt: datetime, payload: bytes) -> bytes:
         timestamp = int(dt.timestamp() - EPOCH_STAMP)
+        self._validate_timestamp(timestamp)
 
         return int.to_bytes(timestamp, self.TIMESTAMP_LENGTH_IN_BYTES, "big") + payload
 
@@ -123,6 +149,7 @@ class KsuidMs(Ksuid):
 
     def _inner_init(self, dt: datetime, payload: bytes) -> bytes:
         timestamp = round((dt.timestamp() - EPOCH_STAMP) * self.TIMESTAMP_MULTIPLIER)
+        self._validate_timestamp(timestamp)
 
         return int.to_bytes(timestamp, self.TIMESTAMP_LENGTH_IN_BYTES, "big") + payload
 
